@@ -1,1 +1,65 @@
+# Builds SwingBox for Gen1 MPC OS (32-bit ARM), tests it, and publishes the install zip as a GitHub Release.
+# Works whether the repo holds the project files directly or just SwingBox-MPC-source.zip (phone-friendly upload).
+name: build
 
+on: [push, workflow_dispatch]
+
+permissions:
+  contents: write     # needed to publish the release
+
+jobs:
+  build:
+    # 22.04 on purpose: its armhf glibc keeps the plugin within GLIBC_2.34, like the JV-880 package
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Locate project (unpack the source zip if that's what was uploaded)
+        run: |
+          if [ -f Makefile ]; then echo "PROJ=." >> "$GITHUB_ENV"
+          elif [ -f SwingBox-MPC/Makefile ]; then echo "PROJ=SwingBox-MPC" >> "$GITHUB_ENV"
+          elif ls *.zip >/dev/null 2>&1; then
+            unzip -q -o "$(ls *.zip | head -1)" -d src_unzipped
+            dir=$(dirname "$(find src_unzipped -name Makefile | head -1)")
+            [ -n "$dir" ] || { echo "No Makefile inside the zip"; exit 1; }
+            echo "PROJ=$dir" >> "$GITHUB_ENV"
+          else echo "Can't find the SwingBox project (Makefile or source zip)"; exit 1; fi
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq g++-arm-linux-gnueabihf binutils-arm-linux-gnueabihf file zip
+          pip install --quiet pillow
+
+      - name: Offline host test (x86)
+        working-directory: ${{ env.PROJ }}
+        run: |
+          make test
+          make abi32
+
+      - name: Build ARM plugin + package (verifies ARM/32-bit/hard-float/glibc)
+        working-directory: ${{ env.PROJ }}
+        run: |
+          chmod +x scripts/*.sh mpc/*.sh
+          READELF=arm-linux-gnueabihf-readelf ./scripts/package.sh
+          ls -la dist
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SwingBox-mpc-armv7
+          path: ${{ env.PROJ }}/dist/*.zip
+
+      - name: Publish release (download link for the MPC / phone)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: Swing Box 1.0.0 (build ${{ github.run_number }})
+          make_latest: true
+          files: |
+            ${{ env.PROJ }}/dist/SwingBox-1.0.0-mpc-armv7.zip
+            ${{ env.PROJ }}/dist/setup.sh
+          body: |
+            Install from Terminus (SSH into the MPC as root):
+            1. Upload SwingBox-1.0.0-mpc-armv7.zip AND setup.sh to /tmp
+            2. sh /tmp/setup.sh   (unpacks the zip even without unzip, then installs)
